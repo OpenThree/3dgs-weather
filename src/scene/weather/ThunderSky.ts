@@ -82,6 +82,7 @@ ThunderSky.SkyShader = {
 
 		'showSunDisc': { value: 1 },
 		'time': { value: 0.0 },
+		'cloudTime': { value: 0.0 },
 
 		// 开场揭幕参数；默认显示完整天空，由场景在高斯点展开后推进揭幕。
 		'revealProgress': { value: 1.0 },
@@ -274,6 +275,7 @@ ThunderSky.SkyShader = {
 
 		uniform float showSunDisc;
 		uniform float time;
+		uniform float cloudTime;
 
 		uniform float revealProgress;
 		uniform vec3 revealGlowColor;
@@ -1767,11 +1769,11 @@ ThunderSky.SkyShader = {
 					cloudScale;
 
 				cloudUV +=
-					time *
+					cloudTime *
 					cloudSpeed;
 
 				float evolve =
-					time *
+					cloudTime *
 					cloudSpeed *
 					300.0;
 

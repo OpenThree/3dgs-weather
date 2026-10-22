@@ -155,6 +155,7 @@ export class WeatherScene {
 	private lightingEnabled = true;
 	private debugEnabled = false;
 	private timeOfDay = 9 / 24;
+	private cloudTimeOffset = 0;
 	private readonly stopAutoRotate = () => {
 		if ( this.mode === 'view' && this.controls ) {
 			this.controls.autoRotate = false;
@@ -306,7 +307,11 @@ export class WeatherScene {
 
 	/** 设置一天中的归一化时刻，范围为 0–1，并同步光照与音效。 */
 	setTimeOfDay( value: number ) {
-		this.timeOfDay = THREE.MathUtils.clamp( value, 0, 1 );
+		const next = THREE.MathUtils.clamp( value, 0, 1 );
+		this.cloudTimeOffset += ( next - this.timeOfDay ) * 24 * 60 * 60;
+		this.timeOfDay = next;
+		// 在灯光控制器采样天空反射之前，同步拖动后的云层状态。
+		this.syncSkyTime( performance.now() );
 		this.lighting.applySplatLighting();
 		this.lighting.syncWeatherAudio();
 	}
@@ -383,6 +388,7 @@ export class WeatherScene {
 		this.sky.renderOrder = - 2000;
 		this.sky.visible = false;
 		this.scene.add( this.sky );
+		this.syncSkyTime( performance.now() );
 
 		this.weatherAudio = new WeatherAudio();
 		this.lightningStorm = new LightningStorm( this.sky, () => this.weatherAudio?.playThunder() );
@@ -772,6 +778,12 @@ export class WeatherScene {
 		this.puddlePatchSystem?.setReflectionSize( Math.round( width * ratio * 0.75 ), Math.round( height * ratio * 0.75 ) );
 	}
 
+	private syncSkyTime( time: number ) {
+		if ( ! this.sky ) return;
+		this.sky.material.uniforms[ 'time' ].value = time * 0.001;
+		this.sky.material.uniforms[ 'cloudTime' ].value = time * 0.001 + this.cloudTimeOffset;
+	}
+
 	private startAnimationLoop() {
 		if ( this.animationFrame || this.disposed ) {
 			return;
@@ -803,12 +815,12 @@ export class WeatherScene {
 			this.walk.playerInited,
 			this.walk.player
 		);
+		this.syncSkyTime( time );
 		this.lightningStorm?.update( this.camera, delta );
 		this.walk.updateHeadlights();
 		this.lighting.syncSplatHeadlights();
 		this.lighting.syncLightOcclusion();
 		if ( this.sky ) {
-			this.sky.material.uniforms[ 'time' ].value = time * 0.001;
 			if ( this.skyRevealElapsed !== undefined ) {
 				this.skyRevealElapsed = Math.min( this.skyRevealDuration, this.skyRevealElapsed + delta );
 				this.sky.material.uniforms[ 'revealProgress' ].value = this.skyRevealElapsed / this.skyRevealDuration;

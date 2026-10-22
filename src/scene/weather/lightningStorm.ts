@@ -487,7 +487,7 @@ function cloudPresenceForDirection( direction: THREE.Vector3, sky: ThunderSky ) 
 	const denom = direction.y * elevation;
 	let uvX = direction.x / denom * skyNumber( sky, 'cloudScale' );
 	let uvY = direction.z / denom * skyNumber( sky, 'cloudScale' );
-	const time = skyNumber( sky, 'time' );
+	const time = skyNumber( sky, 'cloudTime' );
 	const speed = skyNumber( sky, 'cloudSpeed' );
 	uvX += time * speed;
 	uvY += time * speed;
