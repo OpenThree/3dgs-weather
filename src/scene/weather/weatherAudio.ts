@@ -35,6 +35,7 @@ export class WeatherAudio {
 	private disposed = false;
 	private unlockArmed = false;
 	private thunderIndex = 0;
+	private readonly pendingThunderTimers: number[] = [];
 
 	constructor() {
 
@@ -91,8 +92,11 @@ export class WeatherAudio {
 
 	}
 
-	/** 每个雷电组事件立即调用一次，雷声严格按 01–07 循环。 */
-	playThunder() {
+	/**
+	 * 每个雷电组事件调用一次，雷声严格按 01–07 循环。
+	 * delaySec 按闪光距离延迟，模拟声速到达。
+	 */
+	playThunder( delaySec = 0 ) {
 
 		if ( ! this.canPlayRain() ) {
 
@@ -100,7 +104,33 @@ export class WeatherAudio {
 
 		}
 
-		void this.playNextThunder();
+		const delayMs = Math.max( 0, delaySec ) * 1000;
+
+		if ( delayMs <= 16 ) {
+
+			void this.playNextThunder();
+			return;
+
+		}
+
+		const timer = window.setTimeout( () => {
+
+			const index = this.pendingThunderTimers.indexOf( timer );
+			if ( index >= 0 ) {
+
+				this.pendingThunderTimers.splice( index, 1 );
+
+			}
+
+			if ( this.canPlayRain() ) {
+
+				void this.playNextThunder();
+
+			}
+
+		}, delayMs );
+
+		this.pendingThunderTimers.push( timer );
 
 	}
 
@@ -240,7 +270,21 @@ export class WeatherAudio {
 
 	}
 
+	private clearPendingThunder() {
+
+		for ( const timer of this.pendingThunderTimers ) {
+
+			window.clearTimeout( timer );
+
+		}
+
+		this.pendingThunderTimers.length = 0;
+
+	}
+
 	private stopThunder() {
+
+		this.clearPendingThunder();
 
 		for ( const audio of this.thunder ) {
 

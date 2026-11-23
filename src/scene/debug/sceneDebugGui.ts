@@ -531,7 +531,9 @@ export class SceneDebugGui {
 			edgeSoftness: puddle.getEdgeSoftness(),
 			rippleStrength: puddle.getRippleStrength(),
 			roughness: puddle.getRoughness(),
-			reflectionBlur: puddle.getReflectionBlur()
+			reflectionBlur: puddle.getReflectionBlur(),
+			reflectionStrength: puddle.getReflectionStrength(),
+			ior: puddle.getIor()
 		};
 
 		this.label( folder.add( state, 'enabled' ), 'gui.show' ).onChange( ( value: boolean ) => {
@@ -581,6 +583,16 @@ export class SceneDebugGui {
 		this.label( folder.add( state, 'reflectionBlur', ranges.reflectionBlur.min, ranges.reflectionBlur.max, ranges.reflectionBlur.step ), 'gui.reflectionBlur' ).onChange( ( value: number ) => {
 
 			puddle.setReflectionBlur( value );
+
+		} );
+		this.label( folder.add( state, 'reflectionStrength', ranges.reflectionStrength.min, ranges.reflectionStrength.max, ranges.reflectionStrength.step ), 'gui.reflectionStrength' ).onChange( ( value: number ) => {
+
+			puddle.setReflectionStrength( value );
+
+		} );
+		this.label( folder.add( state, 'ior', ranges.ior.min, ranges.ior.max, ranges.ior.step ), 'gui.waterIor' ).onChange( ( value: number ) => {
+
+			puddle.setIor( value );
 
 		} );
 		puddle.getPatches().forEach( ( patch, index ) => {

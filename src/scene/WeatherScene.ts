@@ -391,7 +391,10 @@ export class WeatherScene {
 		this.syncSkyTime( performance.now() );
 
 		this.weatherAudio = new WeatherAudio();
-		this.lightningStorm = new LightningStorm( this.sky, () => this.weatherAudio?.playThunder() );
+		this.lightningStorm = new LightningStorm( this.sky, {
+			onSceneFlash: ( intensity ) => this.lighting.applyLightningFlash( intensity ),
+			onThunder: ( delaySec ) => this.weatherAudio?.playThunder( delaySec )
+		} );
 		this.lightningStorm.setEnabled( this.rainEnabled );
 
 		const { direction, aboveHorizon } = sunDirectionFromTimeOfDay( this.timeOfDay );
@@ -817,6 +820,12 @@ export class WeatherScene {
 		);
 		this.syncSkyTime( time );
 		this.lightningStorm?.update( this.camera, delta );
+		if ( ! this.lightningStorm || this.lightningStorm.getSceneFlash() <= 0 ) {
+
+			this.lighting.applyLightningFlash( 0 );
+
+		}
+
 		this.walk.updateHeadlights();
 		this.lighting.syncSplatHeadlights();
 		this.lighting.syncLightOcclusion();

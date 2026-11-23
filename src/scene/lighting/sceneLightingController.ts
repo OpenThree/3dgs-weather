@@ -201,6 +201,31 @@ export class SceneLightingController {
 
 	}
 
+	/**
+	 * 雷电回击时短暂抬亮场景环境光与高斯点环境项。
+	 * flash 约 0～1.25，只叠加在当前环境光上，不改太阳与曝光。
+	 */
+	applyLightningFlash( flash: number ) {
+
+		const amount = Math.max( 0, flash );
+		const base = this.resolveAmbient();
+		const ambient = this.getAmbientLight();
+		if ( ambient ) {
+
+			ambient.intensity = base + CHARACTER_AMBIENT_BOOST + amount * 14;
+			ambient.color.setRGB(
+				THREE.MathUtils.lerp( 1, 0.82, Math.min( amount, 1 ) ),
+				THREE.MathUtils.lerp( 1, 0.9, Math.min( amount, 1 ) ),
+				1
+			);
+
+		}
+
+		this.splatLighting.setAmbientEnabled( true );
+		this.splatLighting.setAmbientIntensity( base + amount * 1.85 );
+
+	}
+
 	/** 将环境光与太阳参数同步到雪花粒子。 */
 	syncSnowLighting() {
 

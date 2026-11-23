@@ -16,7 +16,11 @@ export const PUDDLE_PATCH_PARAMETER_RANGES = {
 	/** 水面粗糙度的调试范围。 */
 	roughness: { min: 0, max: 1, step: 0.001 },
 	/** 反射模糊倍率的调试范围。 */
-	reflectionBlur: { min: 0, max: 20, step: 0.1 }
+	reflectionBlur: { min: 0, max: 20, step: 0.1 },
+	/** 镜像反射亮度的调试范围。 */
+	reflectionStrength: { min: 0, max: 1, step: 0.01 },
+	/** 水面折射率的调试范围；影响菲涅耳 F0。 */
+	ior: { min: 1, max: 2.5, step: 0.001 }
 } as const;
 
 /** 单块积水贴片的世界空间位姿与尺寸。 */
@@ -51,6 +55,8 @@ export type PuddlePatchSystemOptions = {
 	reflectionBlur?: number;
 	/** 镜像反射亮度，范围为 0–1；菲涅耳权重独立计算。 */
 	reflectionStrength?: number;
+	/** 水面折射率；物理材质据此计算正入射反射率 F0。 */
+	ior?: number;
 	/** 镜像渲染中需隐藏的天气对象与调试辅助对象。 */
 	hideObjects?: readonly THREE.Object3D[];
 };
@@ -89,10 +95,11 @@ export class PuddlePatchSystem {
 		this.setEdgeSoftness( options.edgeSoftness ?? this.getEdgeSoftness() );
 		this.setRoughness( options.roughness ?? this.getRoughness() );
 		this.setReflectionBlur( options.reflectionBlur ?? this.getReflectionBlur() );
+		this.setReflectionStrength( options.reflectionStrength ?? this.getReflectionStrength() );
+		this.setIor( options.ior ?? this.getIor() );
 		this.reflection = new PlanarReflection( [ this.group, ...( options.hideObjects ?? [] ) ] );
 		this.material.uniforms.tSceneReflection.value = this.reflection.target.texture;
 		this.material.uniforms.uReflectionMatrix.value = this.reflection.textureMatrix;
-		this.material.uniforms.uReflectionStrength.value = THREE.MathUtils.clamp( options.reflectionStrength ?? 0.85, 0, 1 );
 		this.gridMaterial = new THREE.ShaderMaterial( {
 			name: 'PuddlePatchGridShader',
 			uniforms: { gridDivisions: { value: 12 } },
@@ -305,6 +312,28 @@ export class PuddlePatchSystem {
 	setReflectionBlur( blur: number ) {
 		const range = PUDDLE_PATCH_PARAMETER_RANGES.reflectionBlur;
 		this.material.uniforms.uReflectionBlur.value = THREE.MathUtils.clamp( blur, range.min, range.max );
+	}
+
+	/** 返回镜像反射亮度，范围为 0–1。 */
+	getReflectionStrength() {
+		return this.material.uniforms.uReflectionStrength.value as number;
+	}
+
+	/** 设置镜像反射亮度并限制在 0–1；菲涅耳权重仍独立计算。 */
+	setReflectionStrength( strength: number ) {
+		const range = PUDDLE_PATCH_PARAMETER_RANGES.reflectionStrength;
+		this.material.uniforms.uReflectionStrength.value = THREE.MathUtils.clamp( strength, range.min, range.max );
+	}
+
+	/** 返回水面折射率。 */
+	getIor() {
+		return this.material.ior;
+	}
+
+	/** 设置水面折射率；物理材质会据此更新菲涅耳 F0。 */
+	setIor( ior: number ) {
+		const range = PUDDLE_PATCH_PARAMETER_RANGES.ior;
+		this.material.ior = THREE.MathUtils.clamp( ior, range.min, range.max );
 	}
 
 	/** 按帧间隔秒数推进涟漪动画。 */

@@ -108,8 +108,9 @@ ThunderSky.SkyShader = {
 		// 雷电槽位 0。
 		'lightningDirection0': { value: new Vector3( 0, 0.35, -1 ).normalize() },
 		'lightningStrength0': { value: 0.0 },
+		'lightningProgress0': { value: 0.0 },
 		'cloudFlashStrength0': { value: 0.0 },
-		'lightningColor0': { value: new Color( 0xcab6ff ) },
+		'lightningColor0': { value: new Color( 0xdceeff ) },
 		'lightningWidth0': { value: 0.0018 },
 		'lightningCloudRadius0': { value: 0.13 },
 		'lightningSeed0': { value: 1.0 },
@@ -125,8 +126,9 @@ ThunderSky.SkyShader = {
 		// 雷电槽位 1。
 		'lightningDirection1': { value: new Vector3( 0.2, 0.40, -1 ).normalize() },
 		'lightningStrength1': { value: 0.0 },
+		'lightningProgress1': { value: 0.0 },
 		'cloudFlashStrength1': { value: 0.0 },
-		'lightningColor1': { value: new Color( 0xcab6ff ) },
+		'lightningColor1': { value: new Color( 0xdceeff ) },
 		'lightningWidth1': { value: 0.0018 },
 		'lightningCloudRadius1': { value: 0.13 },
 		'lightningSeed1': { value: 2.0 },
@@ -142,8 +144,9 @@ ThunderSky.SkyShader = {
 		// 雷电槽位 2。
 		'lightningDirection2': { value: new Vector3( -0.2, 0.45, -1 ).normalize() },
 		'lightningStrength2': { value: 0.0 },
+		'lightningProgress2': { value: 0.0 },
 		'cloudFlashStrength2': { value: 0.0 },
-		'lightningColor2': { value: new Color( 0xcab6ff ) },
+		'lightningColor2': { value: new Color( 0xdceeff ) },
 		'lightningWidth2': { value: 0.0018 },
 		'lightningCloudRadius2': { value: 0.13 },
 		'lightningSeed2': { value: 3.0 },
@@ -295,6 +298,7 @@ ThunderSky.SkyShader = {
 
 		uniform vec3 lightningDirection0;
 		uniform float lightningStrength0;
+		uniform float lightningProgress0;
 		uniform float cloudFlashStrength0;
 		uniform vec3 lightningColor0;
 		uniform float lightningWidth0;
@@ -311,6 +315,7 @@ ThunderSky.SkyShader = {
 
 		uniform vec3 lightningDirection1;
 		uniform float lightningStrength1;
+		uniform float lightningProgress1;
 		uniform float cloudFlashStrength1;
 		uniform vec3 lightningColor1;
 		uniform float lightningWidth1;
@@ -327,6 +332,7 @@ ThunderSky.SkyShader = {
 
 		uniform vec3 lightningDirection2;
 		uniform float lightningStrength2;
+		uniform float lightningProgress2;
 		uniform float cloudFlashStrength2;
 		uniform vec3 lightningColor2;
 		uniform float lightningWidth2;
@@ -648,6 +654,31 @@ ThunderSky.SkyShader = {
 		}
 
 
+		// 中点偏移式折线：逐级倍频、半幅抖动，接近经典闪电生成。
+		float lightningJaggedOffset(
+			float x,
+			float jaggedness,
+			float seed
+		) {
+
+			float offset = 0.0;
+			float amplitude = 0.018 * jaggedness;
+			float frequency = 10.0;
+
+			for ( int i = 0; i < 5; i ++ ) {
+
+				float fi = float( i );
+				offset += sin( x * frequency + seed * ( 1.7 + fi * 0.37 ) ) * amplitude;
+				offset += noise( vec2( x * frequency * 0.85 + seed * 3.1, seed + fi * 5.3 ) ) * amplitude * 0.85;
+				amplitude *= 0.5;
+				frequency *= 2.0;
+
+			}
+
+			return offset;
+
+		}
+
 		float lightningBolt(
 			vec3 direction,
 			vec3 lightningDirection,
@@ -659,7 +690,8 @@ ThunderSky.SkyShader = {
 			float lightningWidth,
 			float lightningBranchStrength,
 			float lightningBranchStart,
-			float lightningBranchSlope
+			float lightningBranchSlope,
+			float lightningProgress
 		) {
 
 			vec2 p =
@@ -669,272 +701,60 @@ ThunderSky.SkyShader = {
 					lightningAngle
 				);
 
-			float x =
-				p.x;
+			float x = p.x;
+			float y = p.y;
+			float halfLength = max( 0.06, lightningLength * 0.5 );
+			float along = clamp( ( x + halfLength ) / max( 1e-4, halfLength * 2.0 ), 0.0, 1.0 );
 
-			float y =
-				p.y;
-
-			float halfLength =
-				max(
-					0.06,
-					lightningLength *
-					0.5
-				);
+			// 先导：通道从起点逐渐显露到 progress，尖端略亮。
+			float progress = clamp( lightningProgress, 0.0, 1.0 );
+			float reveal = 1.0 - smoothstep( progress - 0.03, progress + 0.02, along );
+			float tip = smoothstep( progress - 0.08, progress, along ) * ( 1.0 - smoothstep( progress, progress + 0.05, along ) );
 
 			float path =
-				lightningBend *
-				(
-					x * x -
-					x * 0.08
-				);
+				lightningBend * ( x * x - x * 0.08 )
+				+ lightningJaggedOffset( x, lightningJaggedness, lightningSeed );
 
-			path +=
-				sin(
-					x *
-					(
-						45.0 +
-						lightningJaggedness *
-						24.0
-					)
-					+
-					lightningSeed *
-					2.31
-				)
-				*
-				0.0045 *
-				lightningJaggedness;
-
-			path +=
-				noise(
-					vec2(
-						x *
-						(
-							28.0 +
-							lightningJaggedness *
-							20.0
-						)
-						+
-						lightningSeed *
-						4.7,
-						lightningSeed *
-						1.37
-					)
-				)
-				*
-				0.014 *
-				lightningJaggedness;
-
-			path +=
-				noise(
-					vec2(
-						x * 145.0,
-						lightningSeed *
-						7.11
-					)
-				)
-				*
-				0.0045 *
-				lightningJaggedness;
-
-			float d =
-				abs(
-					y -
-					path
-				);
-
-			float edgeSoftness =
-				min(
-					0.045,
-					halfLength *
-					0.35
-				);
-
+			float d = abs( y - path );
+			float edgeSoftness = min( 0.045, halfLength * 0.35 );
 			float lengthMask =
-				smoothstep(
-					-halfLength,
-					-halfLength +
-					edgeSoftness,
-					x
-				)
-				*
-				(
-					1.0 -
-					smoothstep(
-						halfLength -
-						edgeSoftness,
-						halfLength,
-						x
-					)
-				);
+				smoothstep( -halfLength, -halfLength + edgeSoftness, x )
+				* ( 1.0 - smoothstep( halfLength - edgeSoftness, halfLength, x ) )
+				* reveal;
 
-			float core =
-				lightningWidth /
-				(
-					d +
-					lightningWidth
-				);
+			float core = pow( lightningWidth / ( d + lightningWidth ), 8.2 );
+			float glow = pow( 0.012 / ( d + 0.012 ), 2.1 );
 
-			core =
-				pow(
-					core,
-					7.5
-				);
-
-			float glow =
-				0.010 /
-				(
-					d +
-					0.010
-				);
-
-			glow =
-				pow(
-					glow,
-					2.25
-				);
-
-			float bx =
-				x -
-				lightningBranchStart;
-
-			float branchPath =
-				path +
-				bx *
-				lightningBranchSlope;
-
-			branchPath +=
-				noise(
-					vec2(
-						bx * 95.0,
-						lightningSeed *
-						9.31
-					)
-				)
-				*
-				0.007;
-
-			float branchDistance =
-				abs(
-					y -
-					branchPath
-				);
-
-			float branchSide =
-				step(
-					0.0,
-					bx
-				);
-
-			float reverseSide =
-				step(
-					0.5,
-					fract(
-						lightningSeed *
-						0.173
-					)
-				);
-
-			branchSide =
-				mix(
-					branchSide,
-					1.0 -
-					branchSide,
-					reverseSide
-				);
-
-			float branchRange =
-				1.0 -
-				smoothstep(
-					halfLength *
-						0.15,
-					halfLength *
-						0.72,
-					abs( bx )
-				);
-
+			float bx = x - lightningBranchStart;
+			float branchPath = path + bx * lightningBranchSlope
+				+ lightningJaggedOffset( bx, lightningJaggedness * 0.7, lightningSeed + 17.0 ) * 0.55;
+			float branchDistance = abs( y - branchPath );
+			float branchSide = step( 0.0, bx );
+			float reverseSide = step( 0.5, fract( lightningSeed * 0.173 ) );
+			branchSide = mix( branchSide, 1.0 - branchSide, reverseSide );
+			float branchRange = 1.0 - smoothstep( halfLength * 0.12, halfLength * 0.78, abs( bx ) );
+			float branchGrow = smoothstep( 0.18, 0.55, progress );
 			float branch =
-				pow(
-					0.0012 /
-					(
-						branchDistance +
-						0.0012
-					),
-					5.0
-				)
-				*
-				branchSide
-				*
-				branchRange
-				*
-				lightningBranchStrength;
+				pow( 0.00115 / ( branchDistance + 0.00115 ), 5.2 )
+				* branchSide
+				* branchRange
+				* lightningBranchStrength
+				* branchGrow;
 
-			float branch2Path =
-				path -
-				(
-					x +
-					lightningBranchStart *
-					0.55
-				)
-				*
-				lightningBranchSlope *
-				0.72
-				+
-				0.012;
-
-			branch2Path +=
-				noise(
-					vec2(
-						x * 120.0,
-						lightningSeed *
-						13.7
-					)
-				)
-				*
-				0.005;
-
-			float branch2Distance =
-				abs(
-					y -
-					branch2Path
-				);
-
+			float branch2Path = path
+				- ( x + lightningBranchStart * 0.55 ) * lightningBranchSlope * 0.72
+				+ 0.01
+				+ lightningJaggedOffset( x, lightningJaggedness * 0.55, lightningSeed + 29.0 ) * 0.4;
+			float branch2Distance = abs( y - branch2Path );
 			float branch2 =
-				pow(
-					0.0010 /
-					(
-						branch2Distance +
-						0.0010
-					),
-					5.0
-				)
-				*
-				smoothstep(
-					0.55,
-					0.95,
-					lightningBranchStrength
-				)
-				*
-				(
-					1.0 -
-					smoothstep(
-						halfLength *
-							0.30,
-						halfLength *
-							0.86,
-						abs( x )
-					)
-				);
+				pow( 0.00095 / ( branch2Distance + 0.00095 ), 5.2 )
+				* smoothstep( 0.45, 0.95, lightningBranchStrength )
+				* ( 1.0 - smoothstep( halfLength * 0.28, halfLength * 0.88, abs( x ) ) )
+				* smoothstep( 0.3, 0.7, progress );
 
-			return
-				(
-					core * 3.0 +
-					glow * 0.58 +
-					branch * 1.25 +
-					branch2 * 0.85
-				)
-				*
-				lengthMask;
+			// 白芯 + 冷蓝晕；先导尖端略增强。
+			float body = core * 3.6 + glow * 0.72 + branch * 1.15 + branch2 * 0.8;
+			return ( body + tip * core * 1.8 ) * lengthMask;
 
 		}
 
@@ -2043,7 +1863,7 @@ ThunderSky.SkyShader = {
 						direction,
 						lightningDirection0,
 						lightningAngle0,
-						lightningCloudRadius0,
+						lightningCloudRadius0 * 1.25,
 						lightningCloudStretch0
 					)
 					*
@@ -2057,12 +1877,12 @@ ThunderSky.SkyShader = {
 					lightningColor0 *
 					localFlash0 *
 					densityResponse *
-					2.1;
+					2.8;
 
 				texColor +=
 					lightningColor0 *
 					localFlash0 *
-					0.08;
+					0.14;
 
 				// 云层闪光槽位 1。
 				float localFlash1 =
@@ -2070,7 +1890,7 @@ ThunderSky.SkyShader = {
 						direction,
 						lightningDirection1,
 						lightningAngle1,
-						lightningCloudRadius1,
+						lightningCloudRadius1 * 1.25,
 						lightningCloudStretch1
 					)
 					*
@@ -2084,12 +1904,12 @@ ThunderSky.SkyShader = {
 					lightningColor1 *
 					localFlash1 *
 					densityResponse *
-					2.1;
+					2.8;
 
 				texColor +=
 					lightningColor1 *
 					localFlash1 *
-					0.08;
+					0.14;
 
 				// 云层闪光槽位 2。
 				float localFlash2 =
@@ -2097,7 +1917,7 @@ ThunderSky.SkyShader = {
 						direction,
 						lightningDirection2,
 						lightningAngle2,
-						lightningCloudRadius2,
+						lightningCloudRadius2 * 1.25,
 						lightningCloudStretch2
 					)
 					*
@@ -2111,12 +1931,12 @@ ThunderSky.SkyShader = {
 					lightningColor2 *
 					localFlash2 *
 					densityResponse *
-					2.1;
+					2.8;
 
 				texColor +=
 					lightningColor2 *
 					localFlash2 *
-					0.08;
+					0.14;
 
 				// 合成云层颜色。
 				texColor -=
@@ -2176,7 +1996,8 @@ ThunderSky.SkyShader = {
 						lightningWidth0,
 						lightningBranchStrength0,
 						lightningBranchStart0,
-						lightningBranchSlope0
+						lightningBranchSlope0,
+						lightningProgress0
 					)
 					*
 					lightningStrength0
@@ -2184,13 +2005,13 @@ ThunderSky.SkyShader = {
 					horizonMask;
 
 				texColor +=
-					lightningColor0 *
+					mix( lightningColor0, vec3( 1.0 ), 0.35 ) *
 					bolt0 *
 					boltCloudMask *
 					(
-						0.90 +
+						1.05 +
 						alpha *
-						1.35
+						1.45
 					);
 
 				// 可见电流槽位 1。
@@ -2206,7 +2027,8 @@ ThunderSky.SkyShader = {
 						lightningWidth1,
 						lightningBranchStrength1,
 						lightningBranchStart1,
-						lightningBranchSlope1
+						lightningBranchSlope1,
+						lightningProgress1
 					)
 					*
 					lightningStrength1
@@ -2214,13 +2036,13 @@ ThunderSky.SkyShader = {
 					horizonMask;
 
 				texColor +=
-					lightningColor1 *
+					mix( lightningColor1, vec3( 1.0 ), 0.35 ) *
 					bolt1 *
 					boltCloudMask *
 					(
-						0.90 +
+						1.05 +
 						alpha *
-						1.35
+						1.45
 					);
 
 				// 可见电流槽位 2。
@@ -2236,7 +2058,8 @@ ThunderSky.SkyShader = {
 						lightningWidth2,
 						lightningBranchStrength2,
 						lightningBranchStart2,
-						lightningBranchSlope2
+						lightningBranchSlope2,
+						lightningProgress2
 					)
 					*
 					lightningStrength2
@@ -2244,13 +2067,13 @@ ThunderSky.SkyShader = {
 					horizonMask;
 
 				texColor +=
-					lightningColor2 *
+					mix( lightningColor2, vec3( 1.0 ), 0.35 ) *
 					bolt2 *
 					boltCloudMask *
 					(
-						0.90 +
+						1.05 +
 						alpha *
-						1.35
+						1.45
 					);
 
 			}

@@ -1,29 +1,37 @@
-// 调度云内雷电的形状、分组和闪烁时序，并触发对应雷声。
+// 调度云内 / 云地闪：先导生长、回击与多次回击，并驱动场景闪白与延迟雷声。
+// 通道折线参考中点偏移分叉（drilian / LightningStrike），时序参考真实回击间隔。
 
 import * as THREE from 'three';
 import type { ThunderSky } from './ThunderSky';
 
 /**
- * 云内随机放电。
- * 可见闪电一组 1～3 道：约 70% 分开、20% 可靠近、10% 允许交汇。
- * 小云洞由着色器保持连续；大片晴空的候选路径会丢掉并重新生成。
- * 不改场景环境光、太阳和曝光。
+ * 改进后的雷电调度。
+ * - 先导沿通道生长，再出现回击主峰与 1～4 次后续回击
+ * - 方向偏世界空间云层，不再紧贴相机视锥中心
+ * - 白芯偏蓝，场景环境光短暂抬亮
+ * - 雷声按估计距离延迟
  */
 
 const SLOT_COUNT = 3;
 /** 两组雷暴之间的等待，单位秒。 */
-const FLASH_INTERVAL_MIN = 3.0;
-const FLASH_INTERVAL_MAX = 7.0;
+const FLASH_INTERVAL_MIN = 2.8;
+const FLASH_INTERVAL_MAX = 6.5;
+/** 声速，km/s，用于雷声延迟。 */
+const SOUND_SPEED_KM_S = 0.343;
+
+type BoltKind = 'ic' | 'cg';
 
 type BoltEvent = {
 	startTime: number;
-	duration: number;
+	leaderDuration: number;
+	strokeCount: number;
+	strokeInterval: number;
 	cloudPeak: number;
 	boltPeak: number;
 	hasVisibleBolt: boolean;
-	hasSecondPulse: boolean;
-	secondPulseDelay: number;
-	secondPulseScale: number;
+	kind: BoltKind;
+	/** 估计闪光距离，公里，用于雷声延迟。 */
+	distanceKm: number;
 };
 
 type InteractionMode = 'cross' | 'near' | 'separate';
@@ -48,6 +56,8 @@ type BoltCandidate = {
 	seed: number;
 	screenX: number;
 	screenY: number;
+	kind: BoltKind;
+	distanceKm: number;
 	basis: BoltBasis;
 };
 
@@ -56,7 +66,14 @@ type Segment2D = {
 	b: { x: number; y: number };
 };
 
-/** 调度云内闪电分组，限制路径位于云层，并为每组触发一次雷声。 */
+export type LightningStormOptions = {
+	/** 每帧场景闪白强度，0～1。 */
+	onSceneFlash?: ( intensity: number ) => void;
+	/** 带距离延迟的雷声。 */
+	onThunder?: ( delaySec: number ) => void;
+};
+
+/** 调度闪电分组，限制路径位于云层，并为每组触发一次延迟雷声。 */
 export class LightningStorm {
 
 	private enabled = false;
@@ -65,15 +82,31 @@ export class LightningStorm {
 	private groupActive = false;
 	private groupTime = 0;
 	private groupEndTime = 0;
+	private sceneFlash = 0;
 	private readonly boltEvents: Array<BoltEvent | null> = [ null, null, null ];
 	private readonly cameraDirection = new THREE.Vector3();
 	private readonly right = new THREE.Vector3();
 	private readonly up = new THREE.Vector3();
+	private readonly scratch = new THREE.Vector3();
+	private readonly onSceneFlash?: ( intensity: number ) => void;
+	private readonly onThunder?: ( delaySec: number ) => void;
 
 	constructor(
 		private readonly sky: ThunderSky,
-		private readonly onLightning?: () => void
-	) {}
+		options: LightningStormOptions = {}
+	) {
+
+		this.onSceneFlash = options.onSceneFlash;
+		this.onThunder = options.onThunder;
+
+	}
+
+	/** 当前帧应叠加到场景环境光上的闪白强度。 */
+	getSceneFlash() {
+
+		return this.sceneFlash;
+
+	}
 
 	/** 切换雷电调度，关闭时清空当前雷电槽位。 */
 	setEnabled( enabled: boolean ) {
@@ -84,6 +117,8 @@ export class LightningStorm {
 
 			this.timer = 0;
 			this.groupActive = false;
+			this.sceneFlash = 0;
+			this.onSceneFlash?.( 0 );
 			this.clearSlots();
 
 		} else {
@@ -94,11 +129,13 @@ export class LightningStorm {
 
 	}
 
-	/** 按帧间隔秒数推进雷电分组时序，并参考相机方向生成候选路径。 */
+	/** 按帧间隔秒数推进雷电分组时序。 */
 	update( camera: THREE.Camera, delta: number ) {
 
 		if ( ! this.enabled ) {
 
+			this.sceneFlash = 0;
+			this.onSceneFlash?.( 0 );
 			return;
 
 		}
@@ -120,53 +157,64 @@ export class LightningStorm {
 	private trigger( camera: THREE.Camera ) {
 
 		camera.getWorldDirection( this.cameraDirection );
-		// 同一个雷电组事件同时驱动画面和雷声；组内多次闪烁不重复触发音频。
-		this.onLightning?.();
 		this.groupActive = true;
 		this.groupTime = 0;
 		this.groupEndTime = 0;
+		this.sceneFlash = 0;
 
-		const cloudOnly = Math.random() < 0.42;
+		// 约四成只有云内闪光；其余里约三分之一偏云地闪外观。
+		const cloudOnly = Math.random() < 0.38;
+		const preferCg = ! cloudOnly && Math.random() < 0.34;
 		const visibleCount = cloudOnly ? 0 : THREE.MathUtils.randInt( 1, 3 );
 
 		for ( let i = 0; i < SLOT_COUNT; i ++ ) {
 
 			this.setSlot( i, 'lightningStrength', 0 );
 			this.setSlot( i, 'cloudFlashStrength', 0 );
+			this.setSlot( i, 'lightningProgress', 0 );
 			this.boltEvents[ i ] = null;
 
 		}
 
+		let thunderDistanceKm = THREE.MathUtils.randFloat( 1.2, 6.5 );
+
 		if ( cloudOnly ) {
 
-			this.randomizeBoltShape( camera, 0, [] );
-			const duration = THREE.MathUtils.randFloat( 0.20, 0.58 );
-			const startTime = THREE.MathUtils.randFloat( 0.0, 0.12 );
+			this.randomizeBoltShape( camera, 0, [], 'ic' );
+			const leaderDuration = THREE.MathUtils.randFloat( 0.05, 0.14 );
+			const strokeCount = THREE.MathUtils.randInt( 1, 3 );
+			const strokeInterval = THREE.MathUtils.randFloat( 0.035, 0.09 );
+			const startTime = THREE.MathUtils.randFloat( 0.0, 0.08 );
+			const hold = leaderDuration + strokeCount * strokeInterval + 0.12;
 			this.boltEvents[ 0 ] = {
 				startTime,
-				duration,
-				cloudPeak: THREE.MathUtils.randFloat( 0.45, 1.80 ),
+				leaderDuration,
+				strokeCount,
+				strokeInterval,
+				cloudPeak: THREE.MathUtils.randFloat( 0.7, 2.1 ),
 				boltPeak: 0,
 				hasVisibleBolt: false,
-				hasSecondPulse: Math.random() < 0.68,
-				secondPulseDelay: THREE.MathUtils.randFloat( 0.055, 0.20 ),
-				secondPulseScale: THREE.MathUtils.randFloat( 0.22, 0.82 )
+				kind: 'ic',
+				distanceKm: thunderDistanceKm
 			};
-			this.groupEndTime = startTime + duration + 0.25;
+			this.groupEndTime = startTime + hold + 0.2;
+			this.queueThunder( thunderDistanceKm );
 			return;
 
 		}
 
 		const acceptedBolts: BoltCandidate[] = [];
-		let previousStart = THREE.MathUtils.randFloat( 0.0, 0.12 );
+		let previousStart = THREE.MathUtils.randFloat( 0.0, 0.08 );
 
 		for ( let i = 0; i < visibleCount; i ++ ) {
 
-			const accepted = this.randomizeBoltShape( camera, i, acceptedBolts );
+			const kind: BoltKind = preferCg && i === 0 ? 'cg' : 'ic';
+			const accepted = this.randomizeBoltShape( camera, i, acceptedBolts, kind );
 
 			if ( accepted ) {
 
 				acceptedBolts.push( accepted );
+				thunderDistanceKm = Math.min( thunderDistanceKm, accepted.distanceKm );
 
 			}
 
@@ -174,25 +222,38 @@ export class LightningStorm {
 
 			if ( i > 0 ) {
 
-				startTime = previousStart + THREE.MathUtils.randFloat( 0.015, 0.22 );
+				startTime = previousStart + THREE.MathUtils.randFloat( 0.01, 0.16 );
 				previousStart = startTime;
 
 			}
 
-			const duration = THREE.MathUtils.randFloat( 0.25, 0.70 );
+			const leaderDuration = THREE.MathUtils.randFloat( 0.045, 0.12 );
+			const strokeCount = THREE.MathUtils.randInt( 1, 4 );
+			const strokeInterval = THREE.MathUtils.randFloat( 0.03, 0.085 );
+			const hold = leaderDuration + strokeCount * strokeInterval + 0.1;
 			this.boltEvents[ i ] = {
 				startTime,
-				duration,
-				cloudPeak: THREE.MathUtils.randFloat( 0.45, 1.85 ),
-				boltPeak: THREE.MathUtils.randFloat( 0.65, 2.00 ),
+				leaderDuration,
+				strokeCount,
+				strokeInterval,
+				cloudPeak: THREE.MathUtils.randFloat( 0.65, 2.2 ),
+				boltPeak: THREE.MathUtils.randFloat( 0.9, 2.35 ),
 				hasVisibleBolt: true,
-				hasSecondPulse: Math.random() < 0.72,
-				secondPulseDelay: THREE.MathUtils.randFloat( 0.055, 0.21 ),
-				secondPulseScale: THREE.MathUtils.randFloat( 0.20, 0.90 )
+				kind,
+				distanceKm: accepted?.distanceKm ?? thunderDistanceKm
 			};
-			this.groupEndTime = Math.max( this.groupEndTime, startTime + duration + 0.28 );
+			this.groupEndTime = Math.max( this.groupEndTime, startTime + hold + 0.22 );
 
 		}
+
+		this.queueThunder( thunderDistanceKm );
+
+	}
+
+	private queueThunder( distanceKm: number ) {
+
+		const delaySec = THREE.MathUtils.clamp( distanceKm / SOUND_SPEED_KM_S, 0.35, 7.5 );
+		this.onThunder?.( delaySec );
 
 	}
 
@@ -200,11 +261,14 @@ export class LightningStorm {
 
 		if ( ! this.groupActive ) {
 
+			this.sceneFlash = 0;
+			this.onSceneFlash?.( 0 );
 			return;
 
 		}
 
 		this.groupTime += delta;
+		let maxFlash = 0;
 
 		for ( let i = 0; i < SLOT_COUNT; i ++ ) {
 
@@ -217,19 +281,11 @@ export class LightningStorm {
 			}
 
 			const localTime = this.groupTime - event.startTime;
-			let cloudPulse = pulseCurve( localTime, event.duration );
-			let boltPulse = cloudPulse;
+			const phase = evaluateDischarge( localTime, event );
+			const cloudPulse = Math.min( phase.cloud, 1.9 );
+			const boltPulse = Math.min( phase.bolt, 1.9 );
 
-			if ( event.hasSecondPulse ) {
-
-				cloudPulse += pulseCurve( localTime - event.secondPulseDelay, event.duration * 0.52 ) * event.secondPulseScale;
-				boltPulse += pulseCurve( localTime - event.secondPulseDelay, event.duration * 0.40 ) * event.secondPulseScale;
-
-			}
-
-			cloudPulse = Math.min( cloudPulse, 1.8 );
-			boltPulse = Math.min( boltPulse, 1.8 );
-
+			this.setSlot( i, 'lightningProgress', phase.progress );
 			this.setSlot( i, 'cloudFlashStrength', cloudPulse * event.cloudPeak );
 			this.setSlot(
 				i,
@@ -237,11 +293,20 @@ export class LightningStorm {
 				event.hasVisibleBolt ? boltPulse * event.boltPeak : 0
 			);
 
+			const flash = Math.max( cloudPulse * event.cloudPeak * 0.22, boltPulse * event.boltPeak * 0.45 );
+			maxFlash = Math.max( maxFlash, flash );
+
 		}
+
+		// 回击瞬间抬高场景闪白，先导阶段只给很弱的氛围。
+		this.sceneFlash = THREE.MathUtils.clamp( maxFlash * 0.55, 0, 1.25 );
+		this.onSceneFlash?.( this.sceneFlash );
 
 		if ( this.groupTime > this.groupEndTime ) {
 
 			this.groupActive = false;
+			this.sceneFlash = 0;
+			this.onSceneFlash?.( 0 );
 			this.clearSlots();
 
 		}
@@ -251,55 +316,32 @@ export class LightningStorm {
 	private randomizeBoltShape(
 		camera: THREE.Camera,
 		index: number,
-		acceptedBolts: BoltCandidate[]
+		acceptedBolts: BoltCandidate[],
+		kind: BoltKind
 	) {
 
 		this.right.set( 1, 0, 0 ).applyQuaternion( camera.quaternion );
 		this.up.set( 0, 1, 0 ).applyQuaternion( camera.quaternion );
 
 		const relationRoll = Math.random();
-		const interactionMode: InteractionMode = relationRoll < 0.10
+		const interactionMode: InteractionMode = relationRoll < 0.08
 			? 'cross'
-			: relationRoll < 0.30
+			: relationRoll < 0.28
 				? 'near'
 				: 'separate';
 
 		let bestCandidate: BoltCandidate | null = null;
 		let bestScore = - Infinity;
 
-		const view = camera as THREE.PerspectiveCamera;
-		const halfTanY = Math.tan( THREE.MathUtils.degToRad( view.fov ) * 0.5 );
-		const halfTanX = halfTanY * view.aspect;
+		for ( let attempt = 0; attempt < 36; attempt ++ ) {
 
-		for ( let attempt = 0; attempt < 30; attempt ++ ) {
-
-			const offsetX = THREE.MathUtils.randFloat( - halfTanX, halfTanX );
-			const offsetY = THREE.MathUtils.randFloat( - halfTanY, halfTanY );
-			const direction = this.cameraDirection.clone()
-				.addScaledVector( this.right, offsetX )
-				.addScaledVector( this.up, offsetY )
-				.normalize();
-
-			const candidate: BoltCandidate = {
-				direction,
-				angle: THREE.MathUtils.degToRad( THREE.MathUtils.randFloat( - 82, 82 ) ),
-				length: THREE.MathUtils.randFloat( 0.13, 0.58 ),
-				width: THREE.MathUtils.randFloat( 0.0009, 0.0025 ),
-				bend: THREE.MathUtils.randFloat( - 0.42, 0.42 ),
-				jaggedness: THREE.MathUtils.randFloat( 0.50, 1.75 ),
-				branchStrength: THREE.MathUtils.randFloat( 0, 1 ),
-				branchStart: THREE.MathUtils.randFloat( - 0.13, 0.13 ),
-				branchSlope: THREE.MathUtils.randFloat( - 0.95, 0.95 ),
-				cloudRadius: THREE.MathUtils.randFloat( 0.045, 0.20 ),
-				cloudStretch: THREE.MathUtils.randFloat( 0.65, 3.3 ),
-				seed: Math.random() * 1000,
-				screenX: offsetX,
-				screenY: offsetY,
-				basis: lightningBasis( direction )
-			};
+			const candidate = this.makeCandidate( camera, kind );
 			const continuity = evaluateCloudContinuity( candidate, this.sky );
 			const conflict = candidateConflicts( candidate, acceptedBolts, interactionMode );
-			const score = continuity.average - continuity.maxClearRun * 0.18 - ( conflict ? 0.35 : 0 );
+			const verticalBonus = kind === 'cg'
+				? Math.abs( Math.sin( candidate.angle ) ) * 0.25
+				: 0;
+			const score = continuity.average - continuity.maxClearRun * 0.18 - ( conflict ? 0.35 : 0 ) + verticalBonus;
 
 			if ( score > bestScore ) {
 
@@ -325,7 +367,7 @@ export class LightningStorm {
 
 		if ( ! evaluateCloudContinuity( bestCandidate, this.sky ).valid ) {
 
-			bestCandidate.length *= 0.62;
+			bestCandidate.length *= kind === 'cg' ? 0.78 : 0.62;
 
 		}
 
@@ -341,14 +383,87 @@ export class LightningStorm {
 		this.setSlot( index, 'lightningBranchSlope', bestCandidate.branchSlope );
 		this.setSlot( index, 'lightningCloudRadius', bestCandidate.cloudRadius );
 		this.setSlot( index, 'lightningCloudStretch', bestCandidate.cloudStretch );
-		( this.uniform( index, 'lightningColor' ).value as THREE.Color ).setHSL(
-			THREE.MathUtils.randFloat( 0.66, 0.77 ),
-			THREE.MathUtils.randFloat( 0.28, 0.65 ),
-			THREE.MathUtils.randFloat( 0.72, 0.92 ),
+		this.setSlot( index, 'lightningProgress', 0 );
+
+		// 白芯偏冷蓝，避免原来的装饰紫。
+		( this.uniform( index, 'lightningColor' ).value as THREE.Color ).setRGB(
+			THREE.MathUtils.randFloat( 0.78, 0.95 ),
+			THREE.MathUtils.randFloat( 0.88, 0.98 ),
+			1.0,
 			THREE.SRGBColorSpace
 		);
 
 		return bestCandidate;
+
+	}
+
+	/** 在云层区域采样方向：保留一点相机朝向，但主要用世界方位，避免闪电视线锁定。 */
+	private makeCandidate( camera: THREE.Camera, kind: BoltKind ): BoltCandidate {
+
+		const view = camera as THREE.PerspectiveCamera;
+		const halfTanY = Math.tan( THREE.MathUtils.degToRad( view.fov ) * 0.5 );
+		const halfTanX = halfTanY * view.aspect;
+
+		// 世界方位：绕上方向随机偏转，再混一点相机朝向，使下一次闪不会总贴视野中心。
+		const azimuth = THREE.MathUtils.randFloat( - Math.PI, Math.PI );
+		const elevation = kind === 'cg'
+			? THREE.MathUtils.randFloat( 0.12, 0.48 )
+			: THREE.MathUtils.randFloat( 0.22, 0.78 );
+		this.scratch.set(
+			Math.cos( elevation ) * Math.sin( azimuth ),
+			Math.sin( elevation ),
+			Math.cos( elevation ) * Math.cos( azimuth )
+		).normalize();
+		const direction = this.scratch.clone()
+			.multiplyScalar( 0.72 )
+			.addScaledVector( this.cameraDirection, 0.28 )
+			.normalize();
+		if ( direction.y < 0.08 ) {
+
+			direction.y = 0.08;
+			direction.normalize();
+
+		}
+
+		// 投影到近似屏幕偏移，供多道闪电避让使用。
+		const screenX = THREE.MathUtils.clamp(
+			direction.dot( this.right ) / Math.max( halfTanX, 1e-4 ),
+			- 1.35,
+			1.35
+		) * halfTanX;
+		const screenY = THREE.MathUtils.clamp(
+			direction.dot( this.up ) / Math.max( halfTanY, 1e-4 ),
+			- 1.15,
+			1.15
+		) * halfTanY;
+
+		const vertical = kind === 'cg'
+			? THREE.MathUtils.degToRad( THREE.MathUtils.randFloat( 62, 88 ) ) * ( Math.random() < 0.5 ? 1 : - 1 )
+			: THREE.MathUtils.degToRad( THREE.MathUtils.randFloat( - 78, 78 ) );
+
+		return {
+			direction,
+			angle: vertical,
+			length: kind === 'cg'
+				? THREE.MathUtils.randFloat( 0.28, 0.72 )
+				: THREE.MathUtils.randFloat( 0.16, 0.55 ),
+			width: THREE.MathUtils.randFloat( 0.00085, 0.0022 ),
+			bend: THREE.MathUtils.randFloat( - 0.28, 0.28 ),
+			jaggedness: THREE.MathUtils.randFloat( 0.75, 1.85 ),
+			branchStrength: kind === 'cg'
+				? THREE.MathUtils.randFloat( 0.45, 1 )
+				: THREE.MathUtils.randFloat( 0.15, 0.95 ),
+			branchStart: THREE.MathUtils.randFloat( - 0.1, 0.08 ),
+			branchSlope: THREE.MathUtils.randFloat( - 0.85, 0.85 ),
+			cloudRadius: THREE.MathUtils.randFloat( 0.08, 0.28 ),
+			cloudStretch: THREE.MathUtils.randFloat( 0.9, 3.6 ),
+			seed: Math.random() * 1000,
+			screenX,
+			screenY,
+			kind,
+			distanceKm: THREE.MathUtils.randFloat( kind === 'cg' ? 0.8 : 1.5, kind === 'cg' ? 5.5 : 8.0 ),
+			basis: lightningBasis( direction )
+		};
 
 	}
 
@@ -358,6 +473,7 @@ export class LightningStorm {
 
 			this.setSlot( i, 'lightningStrength', 0 );
 			this.setSlot( i, 'cloudFlashStrength', 0 );
+			this.setSlot( i, 'lightningProgress', 0 );
 			this.boltEvents[ i ] = null;
 
 		}
@@ -378,23 +494,72 @@ export class LightningStorm {
 
 }
 
-function pulseCurve( t: number, duration: number ) {
+/**
+ * 先导生长 → 回击尖峰 → 后续回击。
+ * progress 控制通道显露；bolt / cloud 控制亮度。
+ */
+function evaluateDischarge( t: number, event: BoltEvent ) {
 
-	if ( t < 0 || t > duration ) {
+	if ( t < 0 ) {
 
-		return 0;
-
-	}
-
-	const attack = Math.max( 0.012, duration * 0.10 );
-
-	if ( t < attack ) {
-
-		return t / attack;
+		return { progress: 0, bolt: 0, cloud: 0 };
 
 	}
 
-	return Math.max( 0, 1 - ( t - attack ) / Math.max( 0.001, duration - attack ) );
+	const { leaderDuration, strokeCount, strokeInterval } = event;
+
+	if ( t < leaderDuration ) {
+
+		const u = t / Math.max( leaderDuration, 1e-4 );
+		// 先导又暗又短，只勾出通道轮廓。
+		return {
+			progress: THREE.MathUtils.smoothstep( 0, 1, u ),
+			bolt: event.hasVisibleBolt ? 0.12 + u * 0.22 : 0,
+			cloud: 0.18 + u * 0.45
+		};
+
+	}
+
+	const afterLeader = t - leaderDuration;
+	let bolt = 0;
+	let cloud = 0;
+
+	for ( let s = 0; s < strokeCount; s ++ ) {
+
+		const local = afterLeader - s * strokeInterval;
+		if ( local < 0 || local > strokeInterval * 1.35 ) {
+
+			continue;
+
+		}
+
+		// 回击：极短上升 + 较快衰减，后续回击逐次变弱。
+		const attack = 0.008 + s * 0.002;
+		const fall = 0.045 + s * 0.012;
+		let pulse = 0;
+
+		if ( local < attack ) {
+
+			pulse = local / attack;
+
+		} else {
+
+			pulse = Math.exp( - ( local - attack ) / fall );
+
+		}
+
+		const weight = Math.pow( 0.62, s );
+		bolt = Math.max( bolt, pulse * weight );
+		cloud = Math.max( cloud, pulse * weight * ( s === 0 ? 1 : 0.75 ) );
+
+	}
+
+	// 回击之后通道仍完整可见，直到组结束。
+	return {
+		progress: 1,
+		bolt: event.hasVisibleBolt ? bolt : 0,
+		cloud: Math.max( cloud, bolt * 0.35 )
+	};
 
 }
 
@@ -555,6 +720,10 @@ function evaluateCloudContinuity( candidate: BoltCandidate, sky: ThunderSky ) {
 	let clearRun = 0;
 	let maxClearRun = 0;
 	let cloudSamples = 0;
+	// 云地闪允许更多晴空段，通道可以探出云底。
+	const maxClear = candidate.kind === 'cg' ? 3 : 1;
+	const minCloud = candidate.kind === 'cg' ? 7 : 10;
+	const minAverage = candidate.kind === 'cg' ? 0.12 : 0.19;
 
 	for ( let i = 0; i < sampleCount; i ++ ) {
 
@@ -581,7 +750,7 @@ function evaluateCloudContinuity( candidate: BoltCandidate, sky: ThunderSky ) {
 	const average = total / sampleCount;
 
 	return {
-		valid: maxClearRun <= 1 && cloudSamples >= 10 && average >= 0.19,
+		valid: maxClearRun <= maxClear && cloudSamples >= minCloud && average >= minAverage,
 		average,
 		maxClearRun,
 		cloudSamples
